@@ -13,6 +13,7 @@ import numpy as np
 import base64
 from io import BytesIO
 import json
+import random
 
 def binary_mask2coco_annot(binary_mask, image_id, category_id, annot_id, iscrowd=0):
     """
@@ -321,6 +322,56 @@ def compute_IoU_from_coco_json(coco_gt, coco_dt, coco_type='segm'):
     return mean_iou
 
 
+def remove_img_wt_annotations(coco_dict):
+    """Remove from a COCO dictionary (COCO JSON loaded as a Python dict) images that
+    have no corresponding annotations.
+
+
+    Args:
+        coco_dict (dict): COCO JSON loaded as a Python dict, we call it COCO dict
+
+    Returns:
+        dict: COCO dict
+    """
+    img_id_from_annot = set([ann["image_id"] for ann in coco_dict["annotations"]])
+    img_id = set([ann["id"] for ann in coco_dict["images"]])
+
+    img_id_wt_annot = img_id - img_id_from_annot
+
+    return {
+        "info": coco_dict["info"],
+        "licenses": coco_dict["licenses"],
+        "annotations": coco_dict["annotations"],
+        "images": [im for im in coco_dict["images"] if im["id"] not in img_id_wt_annot],
+        "categories": coco_dict["categories"]
+    }
+
+def generate_small_batch(coco_dict, nb_img=50, seed=42):
+    """Generate a COCO dict by keeping only `nb_img` images
+    and their associated annotations. Handy to create small test datasets.
+
+    Args:
+        coco_dict ([type]): [description]
+        nb_img (int, optional): [description]. Defaults to 50.
+        seed (int, optional): [description]. Defaults to 42.
+
+    Returns:
+        dict: COCO dict
+    """
+    random.seed(42)
+    img_id_to_keep = set(
+        random.sample(
+            [ann["id"] for ann in coco_dict["images"]],
+            nb_img
+        )
+    )
+    return {
+        "info": coco_dict["info"],
+        "licenses": coco_dict["licenses"],
+        "annotations": [c for c in coco_dict["annotations"] if c["image_id"] in img_id_to_keep],
+        "images": [im for im in coco_dict["images"] if im["id"] in img_id_to_keep],
+        "categories": coco_dict["categories"]
+    }
 
 if __name__ == "__main__":
 
