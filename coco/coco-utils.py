@@ -5,6 +5,8 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
 from skimage import measure
+from sklearn.model_selection import train_test_split
+
 from PIL import Image
 
 from pathlib import Path
@@ -14,6 +16,13 @@ import base64
 from io import BytesIO
 import json
 import random
+
+import funcy
+
+def save_coco(file, info, licenses, images, annotations, categories):
+    with open(file, 'wt', encoding='UTF-8') as coco:
+        json.dump({ 'info': info, 'licenses': licenses, 'images': images, 
+            'annotations': annotations, 'categories': categories}, coco, indent=2, sort_keys=True)
 
 def binary_mask2coco_annot(binary_mask, image_id, category_id, annot_id, iscrowd=0):
     """
@@ -89,7 +98,6 @@ def generate_coco_json_from_masks(
     }
     
     pass
-
 
 def generate_coco_json_from_tfRecords(tfrecords_path: str):
     """[summary]
@@ -321,7 +329,6 @@ def compute_IoU_from_coco_json(coco_gt, coco_dt, coco_type='segm'):
     
     return mean_iou
 
-
 def remove_img_wt_annotations(coco_dict):
     """Remove from a COCO dictionary (COCO JSON loaded as a Python dict) images that
     have no corresponding annotations.
@@ -372,6 +379,131 @@ def generate_small_batch(coco_dict, nb_img=50, seed=42):
         "images": [im for im in coco_dict["images"] if im["id"] in img_id_to_keep],
         "categories": coco_dict["categories"]
     }
+
+def merge_coco_json(json1, json2, write=False, output_file_path="./merged_datasets.json", overwrite_ids=True):
+    """
+    
+        overwrite_ids: bool, whether to overwrite image ids. 
+            If true: image ids are reassigned with their order of appearance under the "images" key
+            If false: image ids are kept as is, but a check is performed to confirm there is no overlap
+    """
+    json1, json2 = Path(json1), Path(json2)
+    
+    with open(str(json1), "r") as j1:
+        data1 = json.load(j1)
+    with open(str(json2), "r") as j2:
+        data2 = json.load(j2)
+        
+    def reconcile_fields(f1, f2):
+        if f1 is None and f2 is None:
+            f = ""
+        elif f1 is not None and f2 is not None:
+            print(f"[WAR] Keeping first dataset field {f1}")
+            f = f1
+        else:
+            f = f1 if f1 is not None else f2
+        return f
+    
+    info1 = data1['info'] if 'info' in data1 else None
+    info2 = data2['info'] if 'info' in data2 else None
+
+    licenses1 = data1['licenses'] if 'licenses' in data1 else None
+    licenses2 = data2['licenses'] if 'licenses' in data2 else None
+         
+    images_id_old2new_1 = {im['id']:it for it, im in enumerate(data1['images'])}
+    images_id_old2new_2 = {im['id']:it+len(data1['images']) for it, im in enumerate(data2['images'])}
+    
+    annot_id_old2new_1 = {annot['id']:it for it, annot in enumerate(data1['annotations'])}
+    annot_id_old2new_2 = {annot['id']:it+len(data1['annotations']) for it, annot in enumerate(data2['annotations'])}
+    
+    if not overwrite_ids and len(set(images_id_old2new_1.keys()).intersection(images_id_old2new_2.keys())) != 0:
+        raise ValueError("Image IDs overlap, you need to select overwrite_ids=True")
+        
+    if overwrite_ids:
+    
+        for i, _ in enumerate(data1['images']):
+            data1['images'][i]['id'] = i
+            
+        for j, _ in enumerate(data2['images']):
+            data2['images'][j]['id'] = len(data1['images']) + j
+            
+        for i, annot in enumerate(data1['annotations']):
+            data1['annotations'][i]['image_id'] = images_id_old2new_1[annot['image_id']]
+            
+        for j, annot in enumerate(data2['annotations']):
+            data2['annotations'][j]['image_id'] = images_id_old2new_2[annot['image_id']]
+            
+        for i, annot in enumerate(data1['annotations']):
+            data1['annotations'][i]['id'] = annot_id_old2new_1[annot['id']]
+            
+        for j, annot in enumerate(data2['annotations']):
+            data2['annotations'][j]['id'] = annot_id_old2new_2[annot['id']]
+            
+            
+            
+    merged_data = {
+        'info': reconcile_fields(info1, info2), # present if coming from Ahmed's code
+        'licenses':reconcile_fields(licenses1, licenses2),  # present if coming from Ahmed's code
+        'images': [im for im in data1['images']] + [im for im in data2['images']],
+        'annotations': [annot for annot in data1['annotations']] + [annot for annot in data2['annotations']],
+        'categories': data1['categories']  # unchanged in our use-case
+    }
+    
+    if write:
+        with open(output_file_path, "w") as f:
+            json.dump(merged_data, f)
+        
+    return merged_data
+
+def filter_annotations(annotations, images):
+    image_ids = funcy.lmap(lambda i: int(i['id']), images)
+    return funcy.lfilter(lambda a: int(a['image_id']) in image_ids, annotations)
+
+def train_test_split_coco_json(input_json, claims_mapping, save_path="./", filename="car_damages"):
+    with open(input_json, 'rt', encoding='UTF-8') as annotations:
+        coco = json.load(annotations)
+        info = coco['info']
+        licenses = coco['licenses']
+        images = coco['images']
+        annotations = coco['annotations']
+        categories = coco['categories']
+
+        number_of_images = len(images)
+        unique_claim_ids = list(set(list(claims_mapping.values())))
+        
+        #x, y = train_test_split(images, train_size=0.85, random_state=42)
+        x, y = train_test_split(unique_claim_ids, train_size=0.85, random_state=42)
+        
+        with open("train_claim_ids.txt", "w") as f:
+            for claim_id in x:
+                f.write(claim_id+"\n")
+        with open("valid_claim_ids.txt", "w") as f:
+            for claim_id in y:
+                f.write(claim_id+"\n")
+        
+        x_images = [k for k, v in claims_mapping.items() for val in x if v == val]
+        y_images = [k for k, v in claims_mapping.items() for val in y if v == val]
+        train_img_objs = [val for v in x_images for val in images if v == val['file_name']]
+        val_img_objs = [val for v in y_images for val in images if v == val['file_name']]
+        save_coco(
+            os.path.join(
+                save_path,
+                f"train_{filename}.json"
+            ),
+            info, licenses, train_img_objs, 
+            filter_annotations(annotations, train_img_objs), 
+            categories
+        )
+        save_coco(
+            os.path.join(
+                save_path,
+                f"val_{filename}.json"
+            ), 
+            info, licenses, val_img_objs, 
+            filter_annotations(annotations, val_img_objs), 
+            categories)
+
+        print("Saved {} entries in {} and {} in {}".format(len(train_img_objs), './car_damages_train.json', len(val_img_objs), './car_damages_val.json'))
 
 if __name__ == "__main__":
 
