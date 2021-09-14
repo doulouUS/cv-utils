@@ -291,7 +291,8 @@ def IOU(component1, component2):
 
     overlap = component1*component2 # Logical AND
     union = component1 + component2 # Logical OR
-
+    if union.sum() == 0:
+        return 1.0
     return overlap.sum()/float(union.sum())
 
 def compute_IoU_from_coco_json(coco_gt, coco_dt, coco_type='segm'):
