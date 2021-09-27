@@ -36,6 +36,8 @@ def binary_mask2coco_annot(binary_mask, image_id, category_id, annot_id, iscrowd
     Returns:
         dict: annotation dict
     """
+    if len(binary_mask.shape) < 2:
+        raise ValueError(f"Wrong binary mask input shape: {binary_mask.shape}")
     fortran_binary_mask = np.asfortranarray(binary_mask)
     encoded = mask.encode(fortran_binary_mask)
     area = mask.area(encoded)
@@ -189,14 +191,15 @@ def generate_coco_json_from_manifest(input_manifest, write=False):
         "year": "2021",
     }
     # TODO parameterize
-    category = {
+    # TODO Degats -> car_damage
+    category = [{
         "color":"#b00cd4",
         "id":1,
         "keypoint_colors":[],
         "metadata":{},
         "name":"Dégâts",
         "supercategory":""
-    }
+    }]
 
     with open(input_manifest, "r") as f:
         lines = f.readlines()
@@ -261,19 +264,24 @@ def generate_coco_json_from_manifest(input_manifest, write=False):
         binary_mask = np.asarray(mask_image) > 0
 
         # One annotation per image, so image_id and annot_id are the same
-        annot = binary_mask2coco_annot(
-            binary_mask,
-            img_id,
-            1,
-            img_id
-        )
+        try:
+            annot = binary_mask2coco_annot(
+                binary_mask,
+                img_id,
+                1,
+                img_id
+            )
+        # TODO create custom exception here
+        # Skipping when the annotation is empty (=> binary mask is something like np.array(False))
+        except ValueError:
+            continue
         annotations.append(annot)
     coco_json = {
         "info": info,
         "licenses": licenses,
         "images": images,
         "annotations": annotations,
-        "categories": category
+        "categories": category  # TODO must be a list, can be cleaner
     }
     if write:
         with open("coco-json-from-manifest.json", "w") as f:
@@ -295,7 +303,7 @@ def IOU(component1, component2):
         return 1.0
     return overlap.sum()/float(union.sum())
 
-def compute_IoU_from_coco_json(coco_gt, coco_dt, coco_type='segm'):
+def compute_IoU_from_coco_json(coco_gt, coco_dt, coco_type='segm', write_iou=False):
     cocoGt = COCO(coco_gt)
     cocoDt = COCO(coco_dt)  # needs to have a `score` field for each annotations
     
@@ -320,6 +328,19 @@ def compute_IoU_from_coco_json(coco_gt, coco_dt, coco_type='segm'):
     mean_iou = np.mean(
         [iou for _, iou in ious.items()]
     )
+
+    if write_iou:
+        with open(coco_dt, "r") as f:
+            data_dt = json.load(f)
+
+        for i, img in enumerate(data_dt["images"]):
+            data_dt["images"][i]["iou"] = ious[img["id"]]
+
+        coco_dt = Path(coco_dt)
+        output_filename = coco_dt.parent / str(coco_dt.stem+"_w_io.json")
+        with open(output_filename, "w") as f:
+            json.dump(data_dt, f, indent=2, sort_keys=True)
+
     # For additional metrics
     # coco_eval = COCOeval(cocoGt, cocoDt, iouType=coco_type)
 
@@ -508,19 +529,20 @@ def train_test_split_coco_json(input_json, claims_mapping, save_path="./", filen
 
 if __name__ == "__main__":
 
-    tfrecords = Path("./sample_data/tfrecords")
-    train_tfr = tfrecords / "train.record"
-    test_tfr = tfrecords / "test.record"
+    # tfrecords = Path("./sample_data/tfrecords")
+    # train_tfr = tfrecords / "train.record"
+    # test_tfr = tfrecords / "test.record"
 
-    coco = Path("./sample_data/coco_json")
-    test_coco = coco / "val_car_damages.json"
+    coco_dt = Path("pred_coco_corrected.json")
+    coco_gt = Path("val_car_damages_2.json")
 
-    d = generate_coco_json_from_tfRecords(str(test_tfr))
-    with open(coco / "val_car_damages_2.json", "w") as f:
-        json.dump(d, f)
+    # d = generate_coco_json_from_tfRecords(str(test_tfr))
+    # with open(coco / "val_car_damages_2.json", "w") as f:
+    #     json.dump(d, f)
 
     mean_iou = compute_IoU_from_coco_json(
-        str(coco / "val_car_damages.json"),
-        str(coco / "val_car_damages_2.json")
+        str(coco_gt),
+        str(coco_dt),
+        write_iou=True
     )
-    print("")
+    print(f"Mean IOU: {mean_iou}")
